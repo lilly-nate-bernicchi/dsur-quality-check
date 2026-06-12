@@ -1,0 +1,818 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DSUR Data Quality Check</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  :root {
+    --bg: #0B0F1A; --bg2: #111827; --border: #1E293B; --border2: #334155;
+    --text: #E2E8F0; --text2: #94A3B8; --text3: #64748B; --text4: #475569;
+    --blue: #3B82F6; --purple: #8B5CF6; --pink: #EC4899;
+    --red: #DC2626; --orange: #D97706; --blue2: #2563EB; --green: #10B981; --yellow: #F59E0B;
+    --font: 'IBM Plex Mono', 'SF Mono', monospace;
+    --sans: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: var(--sans); background: var(--bg); color: var(--text); min-height: 100vh; }
+  .header { background: linear-gradient(135deg, #0F172A, #1E293B); border-bottom: 1px solid var(--border); padding: 20px 28px; display: flex; align-items: center; gap: 14; }
+  .header-icon { width: 42px; height: 42px; border-radius: 10px; background: linear-gradient(135deg, var(--blue), var(--purple)); display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: 700; color: #fff; }
+  .header h1 { font-size: 26px; font-weight: 700; letter-spacing: -0.02em; }
+  .header p { font-size: 12px; color: var(--text3); font-family: var(--font); margin-top: 2px; }
+  .container { max-width: 1020px; margin: 0 auto; padding: 28px 20px; }
+  .intro { font-size: 14px; color: var(--text2); margin-bottom: 20px; line-height: 1.6; }
+  .intro strong { color: var(--text); }
+
+  /* Upload slots */
+  .slots { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 28px; }
+  .slot { border: 2px dashed var(--border2); border-radius: 14px; padding: 28px 24px; text-align: center; cursor: pointer; background: rgba(15,23,42,0.5); transition: all 0.2s ease; flex: 1; min-width: 220px; position: relative; }
+  .slot.dragover { background: rgba(59,130,246,0.08); }
+  .slot.loaded { background: rgba(59,130,246,0.04); }
+  .slot .icon { font-size: 32px; margin-bottom: 10px; opacity: 0.5; }
+  .slot.loaded .icon { opacity: 1; }
+  .slot .label { font-size: 14px; font-weight: 700; margin-bottom: 4px; }
+  .slot .req { color: var(--red); font-size: 11px; }
+  .slot .sub { font-size: 11px; color: var(--text3); margin-bottom: 8px; }
+  .slot .hint { font-size: 12px; color: var(--text4); }
+  .slot .file-info { font-family: var(--font); font-size: 11px; padding: 6px 12px; border-radius: 6px; display: inline-block; }
+  .slot input { display: none; }
+
+  /* Buttons */
+  .btn { padding: 7px 16px; border-radius: 7px; border: none; color: #fff; font-size: 12px; font-weight: 600; cursor: pointer; font-family: var(--sans); transition: opacity 0.15s; }
+
+  /* Cutoff date input */
+  .cutoff-row { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+  .cutoff-label { font-size: 13px; font-weight: 600; color: var(--text); white-space: nowrap; }
+  .cutoff-input { background: var(--bg2); border: 1px solid var(--border2); border-radius: 7px; padding: 8px 12px; color: var(--text); font-family: var(--font); font-size: 13px; color-scheme: dark; }
+  .cutoff-input:focus { outline: none; border-color: var(--blue); }
+  .cutoff-hint { font-size: 11px; color: var(--text3); }
+  .btn:hover { opacity: 0.85; }
+  .btn-run { padding: 12px 36px; font-size: 14px; margin-bottom: 36px; }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* Check preview list */
+  .cat-group { margin-bottom: 14px; }
+  .cat-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .cat-dot { width: 10px; height: 10px; border-radius: 3px; }
+  .cat-label { font-size: 12px; font-weight: 600; }
+  .checks-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 6px; }
+  .check-preview { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; display: flex; gap: 8px; align-items: center; }
+  .check-preview .num { font-family: var(--font); font-size: 11px; color: var(--text4); min-width: 22px; }
+  .check-preview .name { font-size: 12px; }
+
+  /* Progress */
+  .progress-wrap { text-align: center; padding: 80px 20px; }
+  .progress-pct { font-family: var(--font); font-size: 48px; font-weight: 600; color: var(--blue); margin-bottom: 12px; }
+  .progress-bar { width: 300px; height: 6px; background: var(--border); border-radius: 3px; margin: 0 auto 20px; overflow: hidden; }
+  .progress-fill { height: 100%; background: linear-gradient(90deg, var(--blue), var(--purple)); border-radius: 3px; transition: width 0.3s ease; }
+  .progress-text { color: var(--text2); font-size: 14px; }
+
+  /* Total banner */
+  .total-banner { text-align: center; padding: 32px 20px 28px; margin-bottom: 24px; background: var(--bg2); border: 1px solid var(--border); border-radius: 14px; }
+  .total-number { font-size: 56px; font-weight: 700; font-family: var(--font); line-height: 1; }
+  .total-label { font-size: 15px; font-weight: 600; color: var(--text2); margin-top: 6px; }
+  .total-sub { font-size: 12px; color: var(--text3); margin-top: 6px; font-family: var(--font); }
+
+  /* Actions row */
+  .meta-actions-row { display: flex; gap: 8px; margin-bottom: 24px; }
+
+  /* Issue list */
+  .issue-list-header { display: flex; justify-content: space-between; padding: 0 18px 8px; font-size: 11px; font-weight: 600; color: var(--text3); text-transform: uppercase; letter-spacing: 0.06em; border-bottom: 1px solid var(--border); margin-bottom: 6px; }
+  .issue-list { display: flex; flex-direction: column; gap: 4px; }
+  .issue-row-wrap { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .issue-row { display: flex; align-items: center; gap: 12px; padding: 12px 18px; cursor: pointer; user-select: none; }
+  .issue-row:hover { background: rgba(255,255,255,0.02); }
+  .issue-icon { font-size: 15px; width: 20px; text-align: center; flex-shrink: 0; }
+  .issue-name { flex: 1; font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .issue-count { font-family: var(--font); font-size: 14px; min-width: 36px; text-align: right; flex-shrink: 0; }
+  .result-arrow { font-size: 11px; color: var(--text3); transition: transform 0.2s; }
+  .result-arrow.open { transform: rotate(180deg); }
+
+  /* Detail panel */
+  .detail-panel { border-top: 1px solid var(--border); padding: 12px 18px; background: rgba(0,0,0,0.2); }
+  .detail-panel .skip-msg { font-size: 12px; color: var(--text2); font-style: italic; }
+  .detail-panel .pass-msg { font-size: 12px; color: var(--green); }
+  .detail-table-wrap { max-height: 340px; overflow-y: auto; }
+  .detail-table { width: 100%; border-collapse: collapse; font-size: 12px; font-family: var(--font); }
+  .detail-table th { padding: 6px 10px; border-bottom: 1px solid var(--border); color: var(--text3); text-align: left; white-space: nowrap; position: sticky; top: 0; background: #0d1220; }
+  .detail-table td { padding: 5px 10px; border-bottom: 1px solid var(--bg2); color: #CBD5E1; }
+  .detail-table .ellip { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .overflow-note { font-size: 11px; color: var(--text3); margin-top: 8px; font-style: italic; }
+
+  @media (max-width: 700px) {
+    .slots { flex-direction: column; }
+    .total-number { font-size: 40px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-icon">✓</div>
+  <div>
+    <h1>DSUR Data Quality Check</h1>
+  </div>
+</div>
+
+<div class="container" id="app"></div>
+
+<script>
+// ════════════════════════════════════════════
+//  HELPERS
+// ════════════════════════════════════════════
+function findCol(cols, candidates) {
+  const norm = cols.map(c => c.toLowerCase().replace(/[\s_\-.]/g, ''));
+  for (const cand of candidates) {
+    const cn = cand.toLowerCase().replace(/[\s_\-.]/g, '');
+    const idx = norm.indexOf(cn);
+    if (idx !== -1) return cols[idx];
+  }
+  return null;
+}
+function val(row, col) { return (!col || row[col] == null) ? '' : String(row[col]).trim(); }
+function isEmpty(row, col) { return val(row, col) === ''; }
+function parseDate(v) {
+  if (!v) return null;
+  const s = String(v).trim();
+  if (!s) return null;
+  if (/^\d{5}$/.test(s)) { const d = new Date((Number(s) - 25569) * 86400000); return isNaN(d.getTime()) ? null : d; }
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+}
+function fmtDate(v) {
+  const s = String(v).trim();
+  if (/^\d{5}$/.test(s)) { const d = new Date((Number(s) - 25569) * 86400000); return isNaN(d.getTime()) ? s : d.toISOString().slice(0, 10); }
+  return s;
+}
+function getSubjId(row, cols) { const c = findCol(cols, ['usubjid','subjid','subjectid','subject_id']); return c ? val(row, c) : ''; }
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+// ════════════════════════════════════════════
+//  14 DSUR CHECKS
+// ════════════════════════════════════════════
+const CHECKS = [
+  { id:'missing_country', num:1, name:'Missing COUNTRY', cat:'Demographics', sev:'Critical',
+    desc:'DSUR records with blank COUNTRY field',
+    run(ctx) {
+      const {dsur}=ctx; if(!dsur) return {skipped:true,reason:'No DSUR dataset loaded'};
+      const c=findCol(dsur.cols,['country']); if(!c) return {skipped:true,reason:'No COUNTRY column found'};
+      return dsur.rows.reduce((a,r,i)=>{ if(isEmpty(r,c)) a.push({row:i+2,subject:getSubjId(r,dsur.cols),field:c,value:'(empty)'}); return a; },[]);
+    }},
+  { id:'missing_ethnic', num:2, name:'Missing ETHNIC', cat:'Demographics', sev:'Critical',
+    desc:'DSUR records with blank ETHNIC (ethnicity) field',
+    run(ctx) {
+      const {dsur}=ctx; if(!dsur) return {skipped:true,reason:'No DSUR dataset loaded'};
+      const c=findCol(dsur.cols,['ethnic','ethnicity']); if(!c) return {skipped:true,reason:'No ETHNIC column found'};
+      return dsur.rows.reduce((a,r,i)=>{ if(isEmpty(r,c)) a.push({row:i+2,subject:getSubjId(r,dsur.cols),field:c,value:'(empty)'}); return a; },[]);
+    }},
+  { id:'missing_race', num:3, name:'Missing RACE', cat:'Demographics', sev:'Critical',
+    desc:'DSUR records with blank RACE field',
+    run(ctx) {
+      const {dsur}=ctx; if(!dsur) return {skipped:true,reason:'No DSUR dataset loaded'};
+      const c=findCol(dsur.cols,['race']); if(!c) return {skipped:true,reason:'No RACE column found'};
+      return dsur.rows.reduce((a,r,i)=>{ if(isEmpty(r,c)) a.push({row:i+2,subject:getSubjId(r,dsur.cols),field:c,value:'(empty)'}); return a; },[]);
+    }},
+  { id:'missing_age', num:4, name:'Missing AGE', cat:'Demographics', sev:'Critical',
+    desc:'DSUR records with blank AGE field',
+    run(ctx) {
+      const {dsur}=ctx; if(!dsur) return {skipped:true,reason:'No DSUR dataset loaded'};
+      const c=findCol(dsur.cols,['age']); if(!c) return {skipped:true,reason:'No AGE column found'};
+      return dsur.rows.reduce((a,r,i)=>{ if(isEmpty(r,c)) a.push({row:i+2,subject:getSubjId(r,dsur.cols),field:c,value:'(empty)'}); return a; },[]);
+    }},
+  { id:'missing_sex', num:5, name:'Missing SEX', cat:'Demographics', sev:'Critical',
+    desc:'DSUR records with blank SEX field',
+    run(ctx) {
+      const {dsur}=ctx; if(!dsur) return {skipped:true,reason:'No DSUR dataset loaded'};
+      const c=findCol(dsur.cols,['sex','gender']); if(!c) return {skipped:true,reason:'No SEX column found'};
+      return dsur.rows.reduce((a,r,i)=>{ if(isEmpty(r,c)) a.push({row:i+2,subject:getSubjId(r,dsur.cols),field:c,value:'(empty)'}); return a; },[]);
+    }},
+  { id:'missing_dscpterm', num:6, name:'Missing DSCPTERM when DSCFL=Y', cat:'Disposition + Cross-Domain', sev:'Critical',
+    desc:'DSUR records where DSCFL=Y but DSCPTERM (discontinuation reason) is blank',
+    run(ctx) {
+      const {dsur}=ctx; if(!dsur) return {skipped:true,reason:'No DSUR dataset loaded'};
+      const fl=findCol(dsur.cols,['dscfl']), tm=findCol(dsur.cols,['dscpterm']);
+      if(!fl) return {skipped:true,reason:'No DSCFL column found'}; if(!tm) return {skipped:true,reason:'No DSCPTERM column found'};
+      return dsur.rows.reduce((a,r,i)=>{ if(val(r,fl).toUpperCase()==='Y'&&isEmpty(r,tm)) a.push({row:i+2,subject:getSubjId(r,dsur.cols),field:tm,value:'DSCFL=Y, DSCPTERM is empty'}); return a; },[]);
+    }},
+  { id:'missing_dscsev', num:7, name:'Missing DSCSEV when DSCFL=Y', cat:'Disposition + Cross-Domain', sev:'Critical',
+    desc:'DSUR records where DSCFL=Y but DSCSEV (severity) is blank',
+    run(ctx) {
+      const {dsur}=ctx; if(!dsur) return {skipped:true,reason:'No DSUR dataset loaded'};
+      const fl=findCol(dsur.cols,['dscfl']), sv=findCol(dsur.cols,['dscsev']);
+      if(!fl) return {skipped:true,reason:'No DSCFL column found'}; if(!sv) return {skipped:true,reason:'No DSCSEV column found'};
+      return dsur.rows.reduce((a,r,i)=>{ if(val(r,fl).toUpperCase()==='Y'&&isEmpty(r,sv)) a.push({row:i+2,subject:getSubjId(r,dsur.cols),field:sv,value:'DSCFL=Y, DSCSEV is empty'}); return a; },[]);
+    }},
+  { id:'missing_disp_death', num:8, name:'Missing Disposition Record when DTHFL=Y', cat:'Disposition + Cross-Domain', sev:'Critical',
+    desc:'DSUR subjects with DTHFL=Y but no discontinuation record (DSCFL ≠ Y)',
+    run(ctx) {
+      const {dsur}=ctx; if(!dsur) return {skipped:true,reason:'No DSUR dataset loaded'};
+      const dth=findCol(dsur.cols,['dthfl']), dsc=findCol(dsur.cols,['dscfl']);
+      if(!dth) return {skipped:true,reason:'No DTHFL column found'}; if(!dsc) return {skipped:true,reason:'No DSCFL column found'};
+      return dsur.rows.reduce((a,r,i)=>{ if(val(r,dth).toUpperCase()==='Y'&&val(r,dsc).toUpperCase()!=='Y') a.push({row:i+2,subject:getSubjId(r,dsur.cols),field:dth+' / '+dsc,value:'DTHFL=Y but DSCFL='+(val(r,dsc)||'(empty)')}); return a; },[]);
+    }},
+  { id:'dscdt_gt_dthdt', num:9, name:'Disposition Date > Death Date (DSCDT > DTHDT)', cat:'Disposition + Cross-Domain', sev:'Major',
+    desc:'DSUR records where DSCDT is later than DTHDT',
+    run(ctx) {
+      const {dsur}=ctx; if(!dsur) return {skipped:true,reason:'No DSUR dataset loaded'};
+      const dc=findCol(dsur.cols,['dscdt','dscdtc']), dt=findCol(dsur.cols,['dthdt','dthdtc']);
+      if(!dc) return {skipped:true,reason:'No DSCDT column found'}; if(!dt) return {skipped:true,reason:'No DTHDT column found'};
+      return dsur.rows.reduce((a,r,i)=>{ const d1=parseDate(r[dc]),d2=parseDate(r[dt]); if(d1&&d2&&d1>d2) a.push({row:i+2,subject:getSubjId(r,dsur.cols),field:dc+' vs '+dt,value:fmtDate(r[dc])+' > '+fmtDate(r[dt])}); return a; },[]);
+    }},
+  { id:'date_after_cutoff', num:10, name:'Any Date Variable > CUTOFFDT', cat:'Disposition + Cross-Domain', sev:'Major',
+    desc:'Any date field value that falls after the study cutoff date',
+    run(ctx) {
+      const {dsur}=ctx; if(!dsur) return {skipped:true,reason:'No DSUR dataset loaded'};
+      // Use user-entered cutoff date first, then try CUTOFFDT column
+      let cutoff=null, cutStr='';
+      if(ctx.cutoffDate){ cutoff=new Date(ctx.cutoffDate+'T00:00:00'); cutStr=ctx.cutoffDate; }
+      if(!cutoff){
+        const cc=findCol(dsur.cols,['cutoffdt','cutoffdtc','cutoff_date']);
+        if(cc){ for(const r of dsur.rows){cutoff=parseDate(r[cc]); if(cutoff){cutStr=fmtDate(r[cc]); break;}} }
+      }
+      if(!cutoff) return {skipped:true,reason:'No cutoff date entered and no CUTOFFDT column found in dataset'};
+      const skipCols=new Set(['cutoffdt','cutoffdtc','cutoff_date']);
+      const dcs=dsur.cols.filter(c=>{const l=c.toLowerCase(); return (l.includes('dt')||l.includes('date'))&&!skipCols.has(l);});
+      const issues=[];
+      dsur.rows.forEach((r,i)=>{ dcs.forEach(dc=>{ const d=parseDate(r[dc]); if(d&&d>cutoff) issues.push({row:i+2,subject:getSubjId(r,dsur.cols),field:dc,value:fmtDate(r[dc])+' > cutoff '+cutStr}); }); });
+      return issues;
+    }},
+  { id:'ae_withdrawn_no_ds', num:11, name:"AE AEACN='DRUG WITHDRAWN' Without DS Record", cat:'Disposition + Cross-Domain', sev:'Critical',
+    desc:"SDTM.AE records with AEACN='DRUG WITHDRAWN' but no corresponding DS record with DSSCAT='STUDY TREATMENT'",
+    run(ctx) {
+      const {ae,ds}=ctx;
+      if(!ae) return {skipped:true,reason:'No AE dataset loaded'}; if(!ds) return {skipped:true,reason:'No DS dataset loaded'};
+      const aeSubj=findCol(ae.cols,['usubjid','subjid','subjectid']);
+      const aeacn=findCol(ae.cols,['aeacn']);
+      const aeout=findCol(ae.cols,['aeout']);
+      const dsSubj=findCol(ds.cols,['usubjid','subjid','subjectid']), dsscat=findCol(ds.cols,['dsscat']);
+      if(!aeSubj) return {skipped:true,reason:'No subject ID in AE'};
+      if(!aeacn&&!aeout) return {skipped:true,reason:'No AEACN or AEOUT column in AE'};
+      if(!dsSubj) return {skipped:true,reason:'No subject ID in DS'}; if(!dsscat) return {skipped:true,reason:'No DSSCAT in DS'};
+      const dsStudyTrt=new Set(ds.rows.filter(r=>val(r,dsscat).toUpperCase()==='STUDY TREATMENT').map(r=>val(r,dsSubj).toUpperCase()));
+      return ae.rows.reduce((a,r,i)=>{
+        const acnVal=aeacn?val(r,aeacn).toUpperCase():'';
+        const outVal=aeout?val(r,aeout).toUpperCase():'';
+        const matchField=acnVal==='DRUG WITHDRAWN'?aeacn:outVal==='DRUG WITHDRAWN'?aeout:null;
+        if(matchField&&!dsStudyTrt.has(val(r,aeSubj).toUpperCase()))
+          a.push({row:i+2,subject:val(r,aeSubj),field:matchField,value:val(r,matchField)+" — no DS record with DSSCAT='STUDY TREATMENT'"});
+        return a; },[]);
+    }},
+  { id:'ds_ae_no_withdrawn', num:12, name:"DS DSSCAT='STUDY TREATMENT' Without Matching AE AEACN='DRUG WITHDRAWN'", cat:'Disposition + Cross-Domain', sev:'Critical',
+    desc:"DS record with DSSCAT='STUDY TREATMENT' but no corresponding AE record with AEACN or AEOUT='DRUG WITHDRAWN'",
+    run(ctx) {
+      const {ae,ds}=ctx;
+      if(!ds) return {skipped:true,reason:'No DS dataset loaded'}; if(!ae) return {skipped:true,reason:'No AE dataset loaded'};
+      const dsSubj=findCol(ds.cols,['usubjid','subjid','subjectid']), dsscat=findCol(ds.cols,['dsscat']);
+      const aeSubj=findCol(ae.cols,['usubjid','subjid','subjectid']);
+      const aeacn=findCol(ae.cols,['aeacn']);
+      const aeout=findCol(ae.cols,['aeout']);
+      if(!dsSubj) return {skipped:true,reason:'No subject ID in DS'}; if(!dsscat) return {skipped:true,reason:'No DSSCAT in DS'};
+      if(!aeSubj) return {skipped:true,reason:'No subject ID in AE'};
+      if(!aeacn&&!aeout) return {skipped:true,reason:'No AEACN or AEOUT column in AE'};
+      // Build set of subjects who have an AE record with AEACN or AEOUT = 'DRUG WITHDRAWN'
+      const aeWithdrawn=new Set(ae.rows.filter(r=>{
+        const acn=aeacn?val(r,aeacn).toUpperCase():'';
+        const out=aeout?val(r,aeout).toUpperCase():'';
+        return acn==='DRUG WITHDRAWN'||out==='DRUG WITHDRAWN';
+      }).map(r=>val(r,aeSubj).toUpperCase()));
+      return ds.rows.reduce((a,r,i)=>{
+        if(val(r,dsscat).toUpperCase()==='STUDY TREATMENT'&&!aeWithdrawn.has(val(r,dsSubj).toUpperCase()))
+          a.push({row:i+2,subject:val(r,dsSubj),field:dsscat,value:"DSSCAT='STUDY TREATMENT' — no AE record with AEACN/AEOUT='DRUG WITHDRAWN'"});
+        return a; },[]);
+    }},
+  { id:'invalid_date_format', num:13, name:'Invalid Date Format', cat:'Other', sev:'Major',
+    desc:'Date values not in ISO 8601 (YYYY-MM-DD) or valid Excel serial number format',
+    run(ctx) {
+      const {dsur}=ctx; if(!dsur) return {skipped:true,reason:'No DSUR dataset loaded'};
+      const iso=/^\d{4}(-\d{2}(-\d{2}(T\d{2}:\d{2}(:\d{2})?)?)?)?$/, ser=/^\d{5}$/;
+      const dcs=dsur.cols.filter(c=>/dt$|dtc$|date/i.test(c.toLowerCase())); if(!dcs.length) return {skipped:true,reason:'No date columns detected'};
+      const issues=[]; dsur.rows.forEach((r,i)=>{ dcs.forEach(dc=>{ const v=val(r,dc); if(v&&!iso.test(v)&&!ser.test(v)) issues.push({row:i+2,subject:getSubjId(r,dsur.cols),field:dc,value:v}); }); }); return issues;
+    }},
+  { id:'duplicate_records', num:14, name:'Potential Duplicate Records', cat:'Other', sev:'Warning',
+    desc:'DSUR records with identical USUBJID (same subject appearing multiple times)',
+    run(ctx) {
+      const {dsur}=ctx; if(!dsur) return {skipped:true,reason:'No DSUR dataset loaded'};
+      const sc=findCol(dsur.cols,['usubjid','subjid','subjectid']); if(!sc) return {skipped:true,reason:'No subject ID column'};
+      const seen={}, issues=[]; dsur.rows.forEach((r,i)=>{ const k=val(r,sc).toUpperCase(); if(!k) return; if(seen[k]!==undefined) issues.push({row:i+2,subject:val(r,sc),field:sc,value:'Duplicate of row '+seen[k]}); else seen[k]=i+2; }); return issues;
+    }},
+  { id:'dscdt_no_trtsdt', num:16, name:'DSCDTC Populated While TRTSDT is Missing', cat:'Disposition + Cross-Domain', sev:'Major',
+    desc:'DSUR records where DSCDTC is populated but TRTSDT (treatment start date) is missing — subject discontinued without a recorded treatment start',
+    run(ctx) {
+      const {dsur}=ctx; if(!dsur) return {skipped:true,reason:'No DSUR dataset loaded'};
+      const dscCol=findCol(dsur.cols,['dscdtc','dscdt']);
+      const trtCol=findCol(dsur.cols,['trtsdt','trtsdtc','trtstdt']);
+      if(!dscCol) return {skipped:true,reason:'No DSCDTC column found'};
+      if(!trtCol) return {skipped:true,reason:'No TRTSDT column found'};
+      return dsur.rows.reduce((a,r,i)=>{
+        if(!isEmpty(r,dscCol)&&isEmpty(r,trtCol))
+          a.push({row:i+2,subject:getSubjId(r,dsur.cols),field:trtCol,value:'DSCDT='+fmtDate(r[dscCol])+', TRTSDT is empty'});
+        return a;
+      },[]);
+    }},
+  { id:'dsc_dth_before_rand', num:15, name:'DSCDTC or DTHDTC < RANDDT', cat:'Disposition + Cross-Domain', sev:'Warning',
+    desc:'Disposition date or death date is earlier than randomization date',
+    run(ctx) {
+      const {dsur}=ctx; if(!dsur) return {skipped:true,reason:'No DSUR dataset loaded'};
+      const randCol=findCol(dsur.cols,['randdt','randdtc','randomization_date']);
+      if(!randCol) return {skipped:true,reason:'No RANDDT column found'};
+      const dscCol=findCol(dsur.cols,['dscdtc','dscdt']);
+      const dthCol=findCol(dsur.cols,['dthdtc','dthdt']);
+      if(!dscCol&&!dthCol) return {skipped:true,reason:'No DSCDTC or DTHDTC column found'};
+      const issues=[];
+      dsur.rows.forEach((r,i)=>{
+        const rand=parseDate(r[randCol]); if(!rand) return;
+        const subj=getSubjId(r,dsur.cols);
+        if(dscCol){ const d=parseDate(r[dscCol]); if(d&&d<rand) issues.push({row:i+2,subject:subj,field:dscCol+' vs '+randCol,value:fmtDate(r[dscCol])+' < '+fmtDate(r[randCol])}); }
+        if(dthCol){ const d=parseDate(r[dthCol]); if(d&&d<rand) issues.push({row:i+2,subject:subj,field:dthCol+' vs '+randCol,value:fmtDate(r[dthCol])+' < '+fmtDate(r[randCol])}); }
+      });
+      return issues;
+    }},
+];
+
+// ════════════════════════════════════════════
+//  SAS7BDAT PARSER (native, browser-only)
+// ════════════════════════════════════════════
+function parseSas7bdat(arrayBuffer) {
+  const buf = new Uint8Array(arrayBuffer);
+  const dv = new DataView(arrayBuffer);
+
+  function readStr(offset, len) {
+    let s = '';
+    for (let i = 0; i < len; i++) {
+      const c = buf[offset + i];
+      if (c === 0) break;
+      s += String.fromCharCode(c);
+    }
+    return s.trim();
+  }
+
+  // Detect endianness and 32/64-bit
+  const MAGIC = [0,0,0,0, 0,0,0,0, 0,0,0,0, 0xc2,0xea,0x81,0x60, 0xb3,0x14,0x11,0xcf, 0xbd,0x92,0x08,0x00, 0x09,0xc7,0x31,0x8c, 0x18,0x1f,0x10,0x11];
+  for (let i = 0; i < 32; i++) { if (buf[i] !== MAGIC[i]) throw new Error('Not a valid SAS7BDAT file (magic bytes mismatch)'); }
+
+  const u64 = buf[32] === 0x33; // '3' = 64-bit, '2' = 32-bit
+  const bigEndian = buf[37] === 0x00;
+  const PAGE_SIZE_OFFSET = u64 ? 164 : 164;
+  const pageSize = dv.getInt32(164, !bigEndian);
+  const pageCount = u64 ? Number(dv.getBigInt64(168, !bigEndian)) : dv.getInt32(168, !bigEndian);
+  const headerSize = u64 ? 8192 : 4096;
+
+  // Column names / types are in subheader pages — walk all pages
+  const COL_NAME_SUBHEADER   = 0xFFFFFF22;
+  const COL_ATTR_SUBHEADER   = 0xFFFFFF42;
+  const COL_TEXT_SUBHEADER   = 0xFFFFFFFC;
+  const COL_FORMAT_SUBHEADER = 0xFFFFFBFE;
+  const DATA_SUBHEADER       = 0x00000000;
+
+  const textPool = [];
+  const colAttrs = []; // { name, type:'num'|'char', len }
+  const colNameRefs = []; // { textIdx, nameOffset, nameLen }
+  const dataPages = [];
+
+  const subhdrPtrSize = u64 ? 24 : 12;
+
+  for (let p = 0; p < pageCount; p++) {
+    const pageStart = headerSize + p * pageSize;
+    if (pageStart + pageSize > buf.length) break;
+
+    const pageType = dv.getInt16(pageStart + (u64 ? 32 : 16), !bigEndian);
+    // pageType: 0=meta, 1=data, 2=mix, 512=amd
+    const subhdrCount = dv.getInt16(pageStart + (u64 ? 36 : 20), !bigEndian);
+
+    if (pageType === 1) { dataPages.push(pageStart); continue; }
+    if (pageType !== 0 && pageType !== 2 && pageType !== 512) continue;
+
+    const subhdrPtrStart = u64 ? 40 : 24;
+
+    for (let s = 0; s < subhdrCount; s++) {
+      const ptrOff = pageStart + subhdrPtrStart + s * subhdrPtrSize;
+      let shOffset, shLen, shSig;
+      if (u64) {
+        shOffset = Number(dv.getBigUint64(ptrOff, !bigEndian));
+        shLen    = Number(dv.getBigUint64(ptrOff + 8, !bigEndian));
+        shSig    = dv.getUint32(pageStart + shOffset, !bigEndian);
+      } else {
+        shOffset = dv.getUint32(ptrOff, !bigEndian);
+        shLen    = dv.getUint32(ptrOff + 4, !bigEndian);
+        shSig    = dv.getUint32(pageStart + shOffset, !bigEndian);
+      }
+      if (shLen === 0) continue;
+      const shStart = pageStart + shOffset;
+
+      if (shSig === COL_TEXT_SUBHEADER) {
+        // First 4/8 bytes = length; text pool follows at +4/8 +2
+        const skip = u64 ? 8 : 4;
+        textPool.push(readStr(shStart + skip, shLen - skip));
+      } else if (shSig === COL_NAME_SUBHEADER) {
+        const skip = u64 ? 8 : 4;
+        const base = shStart + skip;
+        const entrySize = u64 ? 24 : 12;
+        const count = Math.floor((shLen - skip) / entrySize);
+        for (let c = 0; c < count; c++) {
+          const e = base + c * entrySize;
+          const textIdx  = dv.getInt16(e + (u64 ? 8 : 4), !bigEndian);
+          const nameOff  = dv.getInt16(e + (u64 ? 10 : 6), !bigEndian);
+          const nameLen  = dv.getInt16(e + (u64 ? 12 : 8), !bigEndian);
+          colNameRefs.push({ textIdx, nameOff, nameLen });
+        }
+      } else if (shSig === COL_ATTR_SUBHEADER) {
+        const skip = u64 ? 8 : 4;
+        const base = shStart + skip;
+        const entrySize = u64 ? 24 : 12;
+        const count = Math.floor((shLen - skip) / entrySize);
+        for (let c = 0; c < count; c++) {
+          const e = base + c * entrySize;
+          const colLen  = u64 ? Number(dv.getBigUint64(e, !bigEndian)) : dv.getUint32(e, !bigEndian);
+          const typeB   = buf[e + (u64 ? 14 : 10)];
+          colAttrs.push({ len: colLen, type: typeB === 1 ? 'num' : 'char' });
+        }
+      }
+      if (pageType === 2) dataPages.push(pageStart); // mix page has data too
+    }
+  }
+
+  // Resolve column names from text pool
+  const cols = colNameRefs.map(ref => {
+    const pool = textPool[ref.textIdx] || '';
+    return pool.substring(ref.nameOff, ref.nameOff + ref.nameLen).trim();
+  });
+
+  if (cols.length === 0) throw new Error('No columns found in SAS7BDAT file');
+
+  // SAS epoch: Jan 1, 1960
+  const SAS_EPOCH = Date.UTC(1960, 0, 1);
+  function sasNumToDate(n) {
+    if (!isFinite(n)) return '';
+    const d = new Date(SAS_EPOCH + n * 86400000);
+    return d.toISOString().slice(0, 10);
+  }
+
+  // Read data rows from data pages
+  const rows = [];
+  const rowLen = colAttrs.reduce((s, c) => s + c.len, 0);
+
+  // For date/time columns: detect by checking if numeric col name matches date patterns
+  const dateColIdx = new Set(cols.map((name, i) => {
+    const n = name.toLowerCase();
+    if (colAttrs[i]?.type === 'num' && (n.endsWith('dt') || n.endsWith('dtc') || n.endsWith('date') || n.includes('dt'))) return i;
+    return -1;
+  }).filter(i => i !== -1));
+
+  const processedDataPages = new Set();
+  for (let p = 0; p < pageCount; p++) {
+    const pageStart = headerSize + p * pageSize;
+    if (pageStart + pageSize > buf.length) break;
+    const pageType = dv.getInt16(pageStart + (u64 ? 32 : 16), !bigEndian);
+    if (pageType !== 1 && pageType !== 2) continue;
+
+    // Row count and offset
+    const rowCountOnPage = dv.getInt16(pageStart + (u64 ? 44 : 28), !bigEndian);
+    let dataOffset = pageStart + (u64 ? 40 : 24) + dv.getInt16(pageStart + (u64 ? 36 : 20), !bigEndian) * subhdrPtrSize;
+    // Align to 8
+    const rem = (dataOffset - pageStart) % 8;
+    if (rem !== 0) dataOffset += 8 - rem;
+
+    for (let r = 0; r < rowCountOnPage; r++) {
+      const rowStart = dataOffset + r * rowLen;
+      if (rowStart + rowLen > pageStart + pageSize) break;
+      const row = {};
+      let colOff = 0;
+      for (let c = 0; c < cols.length && c < colAttrs.length; c++) {
+        const attr = colAttrs[c];
+        const off = rowStart + colOff;
+        colOff += attr.len;
+        if (attr.type === 'char') {
+          row[cols[c]] = readStr(off, attr.len);
+        } else {
+          // SAS stores IEEE 754 big-endian doubles, always 8 bytes
+          const bytes = new Uint8Array(8);
+          if (attr.len <= 8) {
+            // Pad with leading zeros (SAS can store shortened floats)
+            for (let b = 0; b < 8 - attr.len; b++) bytes[b] = 0;
+            for (let b = 0; b < attr.len; b++) bytes[8 - attr.len + b] = buf[off + b];
+          }
+          const tempBuf = bytes.buffer.slice(0);
+          const tempDv = new DataView(tempBuf);
+          const numVal = tempDv.getFloat64(0, false); // SAS always big-endian for numerics
+          if (isNaN(numVal)) { row[cols[c]] = ''; }
+          else if (dateColIdx.has(c)) { row[cols[c]] = sasNumToDate(numVal); }
+          else { row[cols[c]] = numVal; }
+        }
+      }
+      rows.push(row);
+    }
+  }
+
+  return { rows, cols };
+}
+
+// ════════════════════════════════════════════
+//  FILE PARSER
+// ════════════════════════════════════════════
+function parseFile(file) {
+  return new Promise((resolve, reject) => {
+    const n = file.name.toLowerCase();
+    if (n.endsWith('.csv')) {
+      file.text().then(text => {
+        const p = Papa.parse(text, { header: true, skipEmptyLines: true });
+        resolve({ rows: p.data, cols: p.meta.fields || [] });
+      }).catch(reject);
+    } else if (n.endsWith('.sas7bdat')) {
+      file.arrayBuffer().then(buf => {
+        try { resolve(parseSas7bdat(buf)); }
+        catch(e) { reject(e); }
+      }).catch(reject);
+    } else {
+      file.arrayBuffer().then(buf => {
+        const wb = XLSX.read(buf, { type: 'array' });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const json = XLSX.utils.sheet_to_json(ws, { defval: '' });
+        resolve({ rows: json, cols: json.length > 0 ? Object.keys(json[0]) : [] });
+      }).catch(reject);
+    }
+  });
+}
+
+// ════════════════════════════════════════════
+//  APP STATE & RENDER
+// ════════════════════════════════════════════
+const state = {
+  stage: 'upload', // upload | running | results
+  dsurFile: null, aeFile: null, dsFile: null,
+  dsurData: null, aeData: null, dsData: null,
+  progress: 0, results: null, expandedCheck: null, filterCat: 'All',
+  cutoffDate: '',
+};
+
+const SEV_STYLES = {
+  Critical: { border:'#9B1C1C', text:'#FCA5A5', badge:'#DC2626' },
+  Major:    { border:'#92600A', text:'#FCD34D', badge:'#D97706' },
+  Warning:  { border:'#1E5091', text:'#93C5FD', badge:'#2563EB' },
+};
+const CAT_COLORS = { Demographics:'#8B5CF6', 'Disposition + Cross-Domain':'#EC4899', Other:'#06B6D4' };
+const CATS = ['All','Demographics','Disposition + Cross-Domain','Other'];
+
+function render() {
+  const app = document.getElementById('app');
+  if (state.stage === 'upload') app.innerHTML = renderUpload();
+  else if (state.stage === 'running') app.innerHTML = renderProgress();
+  else app.innerHTML = renderResults();
+  bindEvents();
+}
+
+// ── UPLOAD VIEW ──
+function renderUpload() {
+  const slotHTML = (id, label, file, data, accent, req) => {
+    const loaded = !!data;
+    return `<div class="slot ${loaded?'loaded':''}" id="slot-${id}" data-slot="${id}"
+      style="border-color:${loaded?accent:'var(--border2)'}">
+      <div class="icon">${loaded?'✅':'📄'}</div>
+      <div class="label" style="color:${loaded?accent:'var(--text)'}">${esc(label)} ${req?'<span class="req">*</span>':''}</div>
+      ${file
+        ? `<div class="file-info" style="color:${accent};background:${accent}15">${esc(file.name)} — ${data.rows.length.toLocaleString()} rows</div>`
+        : `<div class="hint">Click or drag file here</div>`}
+      <input type="file" accept=".csv,.xlsx,.xls,.sas7bdat" id="input-${id}">
+    </div>`;
+  };
+
+  let checksHTML = '';
+  for (const cat of ['Demographics','Disposition + Cross-Domain','Other']) {
+    checksHTML += `<div class="cat-group">
+      <div class="cat-header"><div class="cat-dot" style="background:${CAT_COLORS[cat]}"></div><span class="cat-label" style="color:${CAT_COLORS[cat]}">${cat}</span></div>
+      <div class="checks-grid">${CHECKS.filter(c=>c.cat===cat).map(c=>`<div class="check-preview"><span class="num">#${c.num}</span><span class="name">${esc(c.name)}</span></div>`).join('')}</div>
+    </div>`;
+  }
+
+  return `
+    <p class="intro">Click to browse (or drag + drop) to upload <strong>DSUR dataset</strong>, <strong>SDTM.AE</strong> and <strong>SDTM.DS</strong> to implement DSUR-specific data issue checks.</p>
+    <div class="slots">
+      ${slotHTML('dsur','DSUR Dataset', state.dsurFile, state.dsurData, '#3B82F6', true)}
+      ${slotHTML('ae','SDTM.AE', state.aeFile, state.aeData, '#8B5CF6', false)}
+      ${slotHTML('ds','SDTM.DS', state.dsFile, state.dsData, '#06B6D4', false)}
+    </div>
+    <div class="cutoff-row">
+      <label for="cutoff-input" class="cutoff-label">DSUR Cutoff Date</label>
+      <input type="date" id="cutoff-input" class="cutoff-input" value="${state.cutoffDate}">
+      <span class="cutoff-hint">Used for check #9. If left blank, the tool will look for a CUTOFFDT column in the dataset.</span>
+    </div>
+    <button class="btn btn-run" id="btn-run" style="background:${state.dsurData?'var(--blue)':'var(--border2)'}" ${state.dsurData?'':'disabled'}>Run All Checks →</button>
+    <h3 style="font-size:13px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:16px">16 Checks</h3>
+    ${checksHTML}`;
+}
+
+// ── PROGRESS VIEW ──
+function renderProgress() {
+  return `<div class="progress-wrap">
+    <div class="progress-pct">${state.progress}%</div>
+    <div class="progress-bar"><div class="progress-fill" style="width:${state.progress}%"></div></div>
+    <p class="progress-text">Running 16 quality checks…</p>
+  </div>`;
+}
+
+// ── RESULTS VIEW ──
+function renderResults() {
+  const r = state.results;
+  if (!r) return '';
+  const s = r.summary;
+
+  // Count how many distinct issue types had at least 1 finding
+  const issueTypesWithFindings = r.checks.filter(c => !c.skipped && c.count > 0).length;
+  const passedChecks = r.checks.filter(c => !c.skipped && c.count === 0).length;
+  const skippedChecks = r.checks.filter(c => c.skipped).length;
+
+  // Build the issue-type rows (all checks, sorted: issues first desc, then pass, then skipped)
+  const sorted = [...r.checks].sort((a, b) => {
+    const aStatus = a.skipped ? 2 : a.count === 0 ? 1 : 0;
+    const bStatus = b.skipped ? 2 : b.count === 0 ? 1 : 0;
+    if (aStatus !== bStatus) return aStatus - bStatus;
+    return b.count - a.count;
+  });
+
+  const issueRows = sorted.map(c => {
+    const status = c.skipped ? 'skipped' : c.count === 0 ? 'pass' : 'fail';
+    const icon = status === 'pass' ? '✅' : status === 'skipped' ? '⏭️' : '🔴';
+    const sv = SEV_STYLES[c.sev];
+    const countDisplay = status === 'pass' ? '<span style="color:var(--green)">0</span>'
+      : status === 'skipped' ? '<span style="color:var(--text4)">—</span>'
+      : `<span style="color:${sv.text};font-weight:700">${c.count}</span>`;
+    const isOpen = state.expandedCheck === c.id;
+
+    let detail = '';
+    if (isOpen) {
+      if (c.skipped) detail = `<div class="detail-panel"><p class="skip-msg">⏭️ ${esc(c.reason)}</p></div>`;
+      else if (c.count === 0) detail = `<div class="detail-panel"><p class="pass-msg">All records pass this check.</p></div>`;
+      else {
+        const rows = c.issues.slice(0, 100).map(iss =>
+          `<tr><td>${iss.row}</td><td class="ellip">${esc(iss.subject||'')}</td><td>${esc(iss.field)}</td><td class="ellip">${esc(String(iss.value))}</td></tr>`
+        ).join('');
+        detail = `<div class="detail-panel"><div class="detail-table-wrap">
+          <table class="detail-table"><thead><tr><th>Row</th><th>Subject</th><th>Field</th><th>Value / Detail</th></tr></thead><tbody>${rows}</tbody></table>
+          </div>${c.count > 100 ? `<p class="overflow-note">Showing first 100 of ${c.count}. Export for full list.</p>` : ''}</div>`;
+      }
+    }
+
+    return `<div class="issue-row-wrap" style="${status==='fail'?'border-color:'+sv.border:''}">
+      <div class="issue-row" data-check="${c.id}">
+        <span class="issue-icon">${icon}</span>
+        <span class="issue-name">${esc(c.name)}</span>
+        <span class="issue-count">${countDisplay}</span>
+        <span class="result-arrow ${isOpen?'open':''}">▼</span>
+      </div>${detail}</div>`;
+  }).join('');
+
+  return `
+    <!-- Grand total banner -->
+    <div class="total-banner">
+      <div class="total-number" style="color:${s.totalIssues===0?'var(--green)':'var(--yellow)'}">${s.totalIssues}</div>
+      <div class="total-label">Total Issues Found</div>
+      <div class="total-sub">${issueTypesWithFindings} issue type${issueTypesWithFindings!==1?'s':''} with findings · ${passedChecks} passed${skippedChecks > 0 ? ' · '+skippedChecks+' skipped' : ''}</div>
+    </div>
+
+    <!-- Actions -->
+    <div class="meta-actions-row">
+      <button class="btn" style="background:var(--blue)" id="btn-csv">Export to Excel</button>
+      <button class="btn" style="background:var(--text4)" id="btn-reset">New Check</button>
+    </div>
+
+    <!-- Issue type list -->
+    <div class="issue-list-header">
+      <span>Issue Type</span><span>Count</span>
+    </div>
+    <div class="issue-list">${issueRows}</div>`;
+}
+
+
+
+// ════════════════════════════════════════════
+//  EVENT BINDING
+// ════════════════════════════════════════════
+function bindEvents() {
+  // Upload slots — click + drag/drop
+  ['dsur','ae','ds'].forEach(id => {
+    const slot = document.getElementById('slot-' + id);
+    const input = document.getElementById('input-' + id);
+    if (!slot || !input) return;
+
+    slot.addEventListener('click', e => { if (e.target !== input) input.click(); });
+    input.addEventListener('change', e => { if (e.target.files?.[0]) loadSlot(id, e.target.files[0]); });
+
+    slot.addEventListener('dragover', e => { e.preventDefault(); e.stopPropagation(); slot.classList.add('dragover'); });
+    slot.addEventListener('dragleave', e => { e.preventDefault(); e.stopPropagation(); slot.classList.remove('dragover'); });
+    slot.addEventListener('drop', e => {
+      e.preventDefault(); e.stopPropagation(); slot.classList.remove('dragover');
+      if (e.dataTransfer.files?.[0]) loadSlot(id, e.dataTransfer.files[0]);
+    });
+  });
+
+  // Run button
+  const runBtn = document.getElementById('btn-run');
+  if (runBtn) runBtn.addEventListener('click', runChecks);
+
+  // Cutoff date input
+  const cutoffInput = document.getElementById('cutoff-input');
+  if (cutoffInput) cutoffInput.addEventListener('change', e => { state.cutoffDate = e.target.value; });
+
+  // Result-stage buttons
+  const csvBtn = document.getElementById('btn-csv');
+  const resetBtn = document.getElementById('btn-reset');
+  if (csvBtn) csvBtn.addEventListener('click', exportCSV);
+  if (resetBtn) resetBtn.addEventListener('click', () => { Object.assign(state, { stage:'upload', results:null, expandedCheck:null, filterCat:'All', dsurFile:null, aeFile:null, dsFile:null, dsurData:null, aeData:null, dsData:null, cutoffDate:'' }); render(); });
+
+  // Filters — removed (simplified view)
+
+  // Check expand/collapse
+  document.querySelectorAll('.issue-row[data-check]').forEach(row => {
+    row.addEventListener('click', () => { state.expandedCheck = state.expandedCheck === row.dataset.check ? null : row.dataset.check; render(); });
+  });
+}
+
+async function loadSlot(id, file) {
+  try {
+    const data = await parseFile(file);
+    if (id === 'dsur') { state.dsurFile = file; state.dsurData = data; }
+    else if (id === 'ae') { state.aeFile = file; state.aeData = data; }
+    else { state.dsFile = file; state.dsData = data; }
+    render();
+  } catch (e) { alert('Error reading ' + file.name + ': ' + e.message); }
+}
+
+async function runChecks() {
+  state.stage = 'running'; state.progress = 0; render();
+  const ctx = { dsur: state.dsurData, ae: state.aeData, ds: state.dsData, cutoffDate: state.cutoffDate };
+  const results = [];
+  for (let i = 0; i < CHECKS.length; i++) {
+    await new Promise(r => setTimeout(r, 50));
+    state.progress = Math.round(((i + 1) / CHECKS.length) * 100);
+    render();
+    const ch = CHECKS[i];
+    const out = ch.run(ctx);
+    results.push({ ...ch, issues: out.skipped ? [] : out, skipped: !!out.skipped, reason: out.reason || null, count: out.skipped ? 0 : out.length });
+  }
+  const totalIssues = results.reduce((s, c) => s + c.count, 0);
+  state.results = {
+    checks: results,
+    summary: {
+      totalIssues,
+      critical: results.filter(c => c.sev === 'Critical').reduce((s, c) => s + c.count, 0),
+      major: results.filter(c => c.sev === 'Major').reduce((s, c) => s + c.count, 0),
+      warning: results.filter(c => c.sev === 'Warning').reduce((s, c) => s + c.count, 0),
+      dsurRecords: state.dsurData?.rows.length || 0,
+      aeRecords: state.aeData?.rows.length || 0,
+      dsRecords: state.dsData?.rows.length || 0,
+    },
+    timestamp: new Date().toISOString(),
+    dsurFile: state.dsurFile?.name, aeFile: state.aeFile?.name, dsFile: state.dsFile?.name,
+  };
+  state.stage = 'results'; state.expandedCheck = null; state.filterCat = 'All'; render();
+}
+
+function exportCSV() {
+  const r = state.results; if (!r) return;
+
+  // Build Issue Summary sheet data
+  const summaryData = [['Check #', 'Check Name', 'Description', 'Status', 'Issue Count']];
+  r.checks.forEach(c => {
+    summaryData.push([c.num, c.name, c.desc, c.skipped ? 'Skipped ('+(c.reason||'')+')' : c.count > 0 ? 'Issues Found' : 'Pass', c.count]);
+  });
+
+  // Build Issue Details sheet data
+  const detailData = [['Check #', 'Check Name', 'Subject', 'Variable', 'Value']];
+  r.checks.forEach(c => {
+    c.issues.forEach(iss => {
+      detailData.push([c.num, c.name, iss.subject || '', iss.field, String(iss.value)]);
+    });
+  });
+
+  // Create workbook with two sheets
+  const wb = XLSX.utils.book_new();
+  const ws1 = XLSX.utils.aoa_to_sheet(summaryData);
+  const ws2 = XLSX.utils.aoa_to_sheet(detailData);
+
+  // Auto-size columns
+  function autoWidth(ws, data) {
+    ws['!cols'] = data[0].map((_, ci) => ({
+      wch: Math.min(50, Math.max(...data.map(row => String(row[ci] ?? '').length)) + 2)
+    }));
+  }
+  autoWidth(ws1, summaryData);
+  autoWidth(ws2, detailData);
+
+  XLSX.utils.book_append_sheet(wb, ws1, 'Issue Summary');
+  XLSX.utils.book_append_sheet(wb, ws2, 'Issue Details');
+  XLSX.writeFile(wb, 'DSUR_QC_Report_' + new Date().toISOString().slice(0, 10) + '.xlsx');
+}
+function dl(content, type, filename) {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
+
+// Boot
+render();
+</script>
+</body>
+</html>
