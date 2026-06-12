@@ -333,177 +333,102 @@ const CHECKS = [
 ];
 
 // ════════════════════════════════════════════
-//  SAS7BDAT PARSER (native, browser-only)
+//  XPT (SAS Transport v5) PARSER
 // ════════════════════════════════════════════
-function parseSas7bdat(arrayBuffer) {
-  const buf = new Uint8Array(arrayBuffer);
-  const dv = new DataView(arrayBuffer);
-
+function parseXpt(arrayBuffer) {
+  const bytes = new Uint8Array(arrayBuffer);
   function readStr(offset, len) {
     let s = '';
     for (let i = 0; i < len; i++) {
-      const c = buf[offset + i];
+      const c = bytes[offset + i];
       if (c === 0) break;
       s += String.fromCharCode(c);
     }
     return s.trim();
   }
-
-  // Detect endianness and 32/64-bit
-  const MAGIC = [0,0,0,0, 0,0,0,0, 0,0,0,0, 0xc2,0xea,0x81,0x60, 0xb3,0x14,0x11,0xcf, 0xbd,0x92,0x08,0x00, 0x09,0xc7,0x31,0x8c, 0x18,0x1f,0x10,0x11];
-  for (let i = 0; i < 32; i++) { if (buf[i] !== MAGIC[i]) throw new Error('Not a valid SAS7BDAT file (magic bytes mismatch)'); }
-
-  const u64 = buf[32] === 0x33; // '3' = 64-bit, '2' = 32-bit
-  const bigEndian = buf[37] === 0x00;
-  const PAGE_SIZE_OFFSET = u64 ? 164 : 164;
-  const pageSize = dv.getInt32(164, !bigEndian);
-  const pageCount = u64 ? Number(dv.getBigInt64(168, !bigEndian)) : dv.getInt32(168, !bigEndian);
-  const headerSize = u64 ? 8192 : 4096;
-
-  // Column names / types are in subheader pages — walk all pages
-  const COL_NAME_SUBHEADER   = 0xFFFFFF22;
-  const COL_ATTR_SUBHEADER   = 0xFFFFFF42;
-  const COL_TEXT_SUBHEADER   = 0xFFFFFFFC;
-  const COL_FORMAT_SUBHEADER = 0xFFFFFBFE;
-  const DATA_SUBHEADER       = 0x00000000;
-
-  const textPool = [];
-  const colAttrs = []; // { name, type:'num'|'char', len }
-  const colNameRefs = []; // { textIdx, nameOffset, nameLen }
-  const dataPages = [];
-
-  const subhdrPtrSize = u64 ? 24 : 12;
-
-  for (let p = 0; p < pageCount; p++) {
-    const pageStart = headerSize + p * pageSize;
-    if (pageStart + pageSize > buf.length) break;
-
-    const pageType = dv.getInt16(pageStart + (u64 ? 32 : 16), !bigEndian);
-    // pageType: 0=meta, 1=data, 2=mix, 512=amd
-    const subhdrCount = dv.getInt16(pageStart + (u64 ? 36 : 20), !bigEndian);
-
-    if (pageType === 1) { dataPages.push(pageStart); continue; }
-    if (pageType !== 0 && pageType !== 2 && pageType !== 512) continue;
-
-    const subhdrPtrStart = u64 ? 40 : 24;
-
-    for (let s = 0; s < subhdrCount; s++) {
-      const ptrOff = pageStart + subhdrPtrStart + s * subhdrPtrSize;
-      let shOffset, shLen, shSig;
-      if (u64) {
-        shOffset = Number(dv.getBigUint64(ptrOff, !bigEndian));
-        shLen    = Number(dv.getBigUint64(ptrOff + 8, !bigEndian));
-        shSig    = dv.getUint32(pageStart + shOffset, !bigEndian);
-      } else {
-        shOffset = dv.getUint32(ptrOff, !bigEndian);
-        shLen    = dv.getUint32(ptrOff + 4, !bigEndian);
-        shSig    = dv.getUint32(pageStart + shOffset, !bigEndian);
-      }
-      if (shLen === 0) continue;
-      const shStart = pageStart + shOffset;
-
-      if (shSig === COL_TEXT_SUBHEADER) {
-        // First 4/8 bytes = length; text pool follows at +4/8 +2
-        const skip = u64 ? 8 : 4;
-        textPool.push(readStr(shStart + skip, shLen - skip));
-      } else if (shSig === COL_NAME_SUBHEADER) {
-        const skip = u64 ? 8 : 4;
-        const base = shStart + skip;
-        const entrySize = u64 ? 24 : 12;
-        const count = Math.floor((shLen - skip) / entrySize);
-        for (let c = 0; c < count; c++) {
-          const e = base + c * entrySize;
-          const textIdx  = dv.getInt16(e + (u64 ? 8 : 4), !bigEndian);
-          const nameOff  = dv.getInt16(e + (u64 ? 10 : 6), !bigEndian);
-          const nameLen  = dv.getInt16(e + (u64 ? 12 : 8), !bigEndian);
-          colNameRefs.push({ textIdx, nameOff, nameLen });
-        }
-      } else if (shSig === COL_ATTR_SUBHEADER) {
-        const skip = u64 ? 8 : 4;
-        const base = shStart + skip;
-        const entrySize = u64 ? 24 : 12;
-        const count = Math.floor((shLen - skip) / entrySize);
-        for (let c = 0; c < count; c++) {
-          const e = base + c * entrySize;
-          const colLen  = u64 ? Number(dv.getBigUint64(e, !bigEndian)) : dv.getUint32(e, !bigEndian);
-          const typeB   = buf[e + (u64 ? 14 : 10)];
-          colAttrs.push({ len: colLen, type: typeB === 1 ? 'num' : 'char' });
-        }
-      }
-      if (pageType === 2) dataPages.push(pageStart); // mix page has data too
-    }
+  function readF64BE(offset) {
+    // XPT uses IBM 370 floating point, but many modern SAS exports use IEEE 754 big-endian
+    // Try IEEE 754 first; fall back gracefully
+    const b = new Uint8Array(8);
+    for (let i = 0; i < 8; i++) b[i] = bytes[offset + i];
+    const dv = new DataView(b.buffer);
+    return dv.getFloat64(0, false); // big-endian
   }
 
-  // Resolve column names from text pool
-  const cols = colNameRefs.map(ref => {
-    const pool = textPool[ref.textIdx] || '';
-    return pool.substring(ref.nameOff, ref.nameOff + ref.nameLen).trim();
-  });
+  const text = new TextDecoder('ascii').decode(bytes);
 
-  if (cols.length === 0) throw new Error('No columns found in SAS7BDAT file');
+  // XPT structure: 80-byte records
+  // Header record 1 starts at 0, member header at 160 (2 records), namestr header at 320+
+  // Find NAMESTR block
+  const namstrIdx = text.indexOf('HEADER RECORD*******NAMESTR');
+  if (namstrIdx === -1) throw new Error('Not a valid XPT file (no NAMESTR header found)');
 
-  // SAS epoch: Jan 1, 1960
+  // Parse number of variables from namestr header
+  const namstrHeader = text.substring(namstrIdx, namstrIdx + 80);
+  const nvarMatch = namstrHeader.match(/NAMESTR HEADER RECORD!+\s+(\d+)/);
+  const nvar = nvarMatch ? parseInt(nvarMatch[1]) : 0;
+
+  // Each NAMESTR entry is 140 bytes
+  const namstrStart = namstrIdx + 80;
+  const cols = [];
+  const colTypes = []; // 1=num, 2=char
+  const colLens = [];
+
+  for (let i = 0; i < nvar; i++) {
+    const base = namstrStart + i * 140;
+    if (base + 140 > bytes.length) break;
+    const ntype = (bytes[base] << 8) | bytes[base + 1]; // 1=num, 2=char
+    const nlng  = (bytes[base + 4] << 8) | bytes[base + 5];
+    const nname = readStr(base + 8, 8);
+    const nlabel = readStr(base + 16, 40);
+    cols.push(nname || nlabel || `VAR${i+1}`);
+    colTypes.push(ntype);
+    colLens.push(nlng || 8);
+  }
+
+  if (cols.length === 0) throw new Error('No columns found in XPT file');
+
+  // Find OBS (data) block
+  const obsIdx = text.indexOf('HEADER RECORD*******OBS');
+  if (obsIdx === -1) throw new Error('No OBS header found in XPT file');
+  const dataStart = obsIdx + 80;
+
+  const rowLen = colLens.reduce((s, l) => s + l, 0);
   const SAS_EPOCH = Date.UTC(1960, 0, 1);
-  function sasNumToDate(n) {
-    if (!isFinite(n)) return '';
-    const d = new Date(SAS_EPOCH + n * 86400000);
-    return d.toISOString().slice(0, 10);
-  }
+  const datePattern = /dt$|dtc$|date/i;
 
-  // Read data rows from data pages
   const rows = [];
-  const rowLen = colAttrs.reduce((s, c) => s + c.len, 0);
-
-  // For date/time columns: detect by checking if numeric col name matches date patterns
-  const dateColIdx = new Set(cols.map((name, i) => {
-    const n = name.toLowerCase();
-    if (colAttrs[i]?.type === 'num' && (n.endsWith('dt') || n.endsWith('dtc') || n.endsWith('date') || n.includes('dt'))) return i;
-    return -1;
-  }).filter(i => i !== -1));
-
-  const processedDataPages = new Set();
-  for (let p = 0; p < pageCount; p++) {
-    const pageStart = headerSize + p * pageSize;
-    if (pageStart + pageSize > buf.length) break;
-    const pageType = dv.getInt16(pageStart + (u64 ? 32 : 16), !bigEndian);
-    if (pageType !== 1 && pageType !== 2) continue;
-
-    // Row count and offset
-    const rowCountOnPage = dv.getInt16(pageStart + (u64 ? 44 : 28), !bigEndian);
-    let dataOffset = pageStart + (u64 ? 40 : 24) + dv.getInt16(pageStart + (u64 ? 36 : 20), !bigEndian) * subhdrPtrSize;
-    // Align to 8
-    const rem = (dataOffset - pageStart) % 8;
-    if (rem !== 0) dataOffset += 8 - rem;
-
-    for (let r = 0; r < rowCountOnPage; r++) {
-      const rowStart = dataOffset + r * rowLen;
-      if (rowStart + rowLen > pageStart + pageSize) break;
-      const row = {};
-      let colOff = 0;
-      for (let c = 0; c < cols.length && c < colAttrs.length; c++) {
-        const attr = colAttrs[c];
-        const off = rowStart + colOff;
-        colOff += attr.len;
-        if (attr.type === 'char') {
-          row[cols[c]] = readStr(off, attr.len);
+  let offset = dataStart;
+  while (offset + rowLen <= bytes.length) {
+    const row = {};
+    let colOff = offset;
+    for (let c = 0; c < cols.length; c++) {
+      const len = colLens[c];
+      if (colTypes[c] === 2) {
+        // Character
+        row[cols[c]] = readStr(colOff, len);
+      } else {
+        // Numeric — 8-byte IBM/IEEE float
+        if (bytes[colOff] === 0x2E || bytes[colOff] === 0x00) {
+          row[cols[c]] = ''; // SAS missing value
         } else {
-          // SAS stores IEEE 754 big-endian doubles, always 8 bytes
-          const bytes = new Uint8Array(8);
-          if (attr.len <= 8) {
-            // Pad with leading zeros (SAS can store shortened floats)
-            for (let b = 0; b < 8 - attr.len; b++) bytes[b] = 0;
-            for (let b = 0; b < attr.len; b++) bytes[8 - attr.len + b] = buf[off + b];
+          const n = readF64BE(colOff);
+          if (isNaN(n)) {
+            row[cols[c]] = '';
+          } else if (datePattern.test(cols[c])) {
+            const d = new Date(SAS_EPOCH + n * 86400000);
+            row[cols[c]] = isNaN(d.getTime()) ? '' : d.toISOString().slice(0, 10);
+          } else {
+            row[cols[c]] = n;
           }
-          const tempBuf = bytes.buffer.slice(0);
-          const tempDv = new DataView(tempBuf);
-          const numVal = tempDv.getFloat64(0, false); // SAS always big-endian for numerics
-          if (isNaN(numVal)) { row[cols[c]] = ''; }
-          else if (dateColIdx.has(c)) { row[cols[c]] = sasNumToDate(numVal); }
-          else { row[cols[c]] = numVal; }
         }
       }
-      rows.push(row);
+      colOff += len;
     }
+    // Skip if all values empty (padding at end of file)
+    if (Object.values(row).every(v => v === '' || v === 0)) break;
+    rows.push(row);
+    offset += rowLen;
   }
 
   return { rows, cols };
@@ -520,9 +445,9 @@ function parseFile(file) {
         const p = Papa.parse(text, { header: true, skipEmptyLines: true });
         resolve({ rows: p.data, cols: p.meta.fields || [] });
       }).catch(reject);
-    } else if (n.endsWith('.sas7bdat')) {
+    } else if (n.endsWith('.xpt')) {
       file.arrayBuffer().then(buf => {
-        try { resolve(parseSas7bdat(buf)); }
+        try { resolve(parseXpt(buf)); }
         catch(e) { reject(e); }
       }).catch(reject);
     } else {
@@ -574,7 +499,7 @@ function renderUpload() {
       ${file
         ? `<div class="file-info" style="color:${accent};background:${accent}15">${esc(file.name)} — ${data.rows.length.toLocaleString()} rows</div>`
         : `<div class="hint">Click or drag file here</div>`}
-      <input type="file" accept=".csv,.xlsx,.xls,.sas7bdat" id="input-${id}">
+      <input type="file" accept=".csv,.xlsx,.xls,.xpt" id="input-${id}">
     </div>`;
   };
 
@@ -587,7 +512,7 @@ function renderUpload() {
   }
 
   return `
-    <p class="intro">Click to browse (or drag + drop) to upload <strong>DSUR dataset</strong>, <strong>SDTM.AE</strong> and <strong>SDTM.DS</strong> to implement DSUR-specific data issue checks.</p>
+    <p class="intro">Click to browse (or drag + drop) to upload <strong>DSUR dataset</strong>, <strong>SDTM.AE</strong> and <strong>SDTM.DS</strong> to implement DSUR-specific data issue checks. Accepted formats: <strong>.xlsx</strong>, <strong>.xls</strong>, <strong>.csv</strong>, <strong>.xpt</strong>.</p>
     <div class="slots">
       ${slotHTML('dsur','DSUR Dataset', state.dsurFile, state.dsurData, '#3B82F6', true)}
       ${slotHTML('ae','SDTM.AE', state.aeFile, state.aeData, '#8B5CF6', false)}
