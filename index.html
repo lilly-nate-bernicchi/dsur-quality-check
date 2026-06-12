@@ -333,7 +333,7 @@ const CHECKS = [
 ];
 
 // ════════════════════════════════════════════
-//  XPT (SAS Transport v5) PARSER
+//  XPT (SAS Transport v5 + v8) PARSER
 // ════════════════════════════════════════════
 function parseXpt(arrayBuffer) {
   const bytes = new Uint8Array(arrayBuffer);
@@ -352,82 +352,72 @@ function parseXpt(arrayBuffer) {
   function readF64BE(offset) {
     const b = new Uint8Array(8);
     for (let i = 0; i < 8; i++) b[i] = bytes[offset + i];
-    const dv = new DataView(b.buffer);
-    return dv.getFloat64(0, false);
+    return new DataView(b.buffer).getFloat64(0, false);
   }
 
-  // XPT records are 80 bytes each
-  // Scan for NAMESTR header by looking for the keyword anywhere in the file
-  let namstrIdx = -1;
+  // Scan 80-byte records to find NAMESTR/NAMSTV8 and OBS/OBSV8 headers
+  let namstrIdx = -1, obsIdx = -1;
+  let isV8 = false;
   for (let i = 0; i < bytes.length - 80; i += 80) {
     const rec = readStr(i, 80);
-    if (rec.includes('NAMESTR')) { namstrIdx = i; break; }
+    if (namstrIdx === -1 && (rec.includes('NAMSTV8') || rec.includes('NAMESTR'))) {
+      namstrIdx = i;
+      isV8 = rec.includes('NAMSTV8');
+    }
+    if (namstrIdx !== -1 && obsIdx === -1 && (rec.includes('OBSV8') || (rec.includes('OBS') && !rec.includes('OBSV8') && i > namstrIdx))) {
+      obsIdx = i;
+      break;
+    }
   }
-  if (namstrIdx === -1) throw new Error('Not a valid XPT file (no NAMESTR record found)');
 
-  // Extract number of variables from the NAMESTR header record
+  if (namstrIdx === -1) throw new Error('Not a valid XPT file (no NAMESTR record found)');
+  if (obsIdx === -1) throw new Error('No OBS header found in XPT file');
+
+  // Extract nvar from the NAMESTR header record
   const namstrHeader = readStr(namstrIdx, 80);
-  const nvarMatch = namstrHeader.match(/(\d+)\s*$/);
+  // nvar is encoded as 8 digits starting at position 54 in v5, or embedded differently in v8
+  // Reliable: just extract the first 8-digit number in the second half of the header
+  const nvarMatch = namstrHeader.match(/!+(\d+)/);
   const nvar = nvarMatch ? parseInt(nvarMatch[1]) : 0;
 
-  // NAMESTR entries start at the next 80-byte record after the header
-  const namstrStart = namstrIdx + 80;
-  const cols = [];
-  const colTypes = [];
-  const colLens = [];
+  // Column name length: 8 chars in v5, 32 chars in v8
+  const nameLen = isV8 ? 32 : 8;
+  // Entry size is always 140 bytes in both v5 and v8
+  const ENTRY_SIZE = 140;
 
-  // Each NAMESTR entry is 140 bytes
-  for (let i = 0; i < nvar; i++) {
-    const base = namstrStart + i * 140;
-    if (base + 140 > bytes.length) break;
+  const cols = [], colTypes = [], colLens = [];
+  const entryStart = namstrIdx + 80;
+
+  // Parse nvar entries; if nvar=0 scan until invalid
+  const maxEntries = nvar > 0 ? nvar : 1000;
+  for (let i = 0; i < maxEntries; i++) {
+    const base = entryStart + i * ENTRY_SIZE;
+    if (base + ENTRY_SIZE > obsIdx) break; // don't read past OBS header
     const ntype = (bytes[base] << 8) | bytes[base + 1];
+    if (nvar === 0 && ntype !== 1 && ntype !== 2) break;
     const nlng  = (bytes[base + 4] << 8) | bytes[base + 5];
-    const nname = readStr(base + 8, 8);
-    cols.push(nname || `VAR${i + 1}`);
+    const nname = readStr(base + 8, nameLen);
+    if (!nname) break;
+    cols.push(nname);
     colTypes.push(ntype);
     colLens.push(nlng > 0 ? nlng : 8);
   }
 
-  // If nvar was 0 or parsing failed, try scanning 140-byte blocks directly
-  if (cols.length === 0) {
-    let pos = namstrStart;
-    while (pos + 140 <= bytes.length) {
-      const ntype = (bytes[pos] << 8) | bytes[pos + 1];
-      if (ntype !== 1 && ntype !== 2) break;
-      const nlng  = (bytes[pos + 4] << 8) | bytes[pos + 5];
-      const nname = readStr(pos + 8, 8);
-      if (!nname) break;
-      cols.push(nname);
-      colTypes.push(ntype);
-      colLens.push(nlng > 0 ? nlng : 8);
-      pos += 140;
-    }
-  }
-
   if (cols.length === 0) throw new Error('No columns found in XPT file');
 
-  // Find OBS header record
-  let obsIdx = -1;
-  for (let i = namstrStart; i < bytes.length - 80; i += 80) {
-    const rec = readStr(i, 80);
-    if (rec.includes('OBS')) { obsIdx = i; break; }
-  }
-  if (obsIdx === -1) throw new Error('No OBS header found in XPT file');
   const dataStart = obsIdx + 80;
-
   const rowLen = colLens.reduce((s, l) => s + l, 0);
-  if (rowLen === 0) throw new Error('Row length is zero — cannot parse data');
+  if (rowLen === 0) throw new Error('Row length is zero');
 
   const SAS_EPOCH = Date.UTC(1960, 0, 1);
   const datePattern = /dt$|dtc$|date/i;
-
   const rows = [];
   let offset = dataStart;
 
   while (offset + rowLen <= bytes.length) {
-    // Check for padding at end of file (XPT pads to 80-byte boundary with spaces/nulls)
+    // Stop at end-of-file padding (all spaces or nulls)
     let allPad = true;
-    for (let i = 0; i < rowLen; i++) {
+    for (let i = 0; i < Math.min(rowLen, 8); i++) {
       const b = bytes[offset + i];
       if (b !== 0x20 && b !== 0x00) { allPad = false; break; }
     }
@@ -440,8 +430,8 @@ function parseXpt(arrayBuffer) {
       if (colTypes[c] === 2) {
         row[cols[c]] = readStr(colOff, len);
       } else {
-        // Check for SAS missing value marker
-        if (bytes[colOff] === 0x2E || (bytes[colOff] >= 0x41 && bytes[colOff] <= 0x5F)) {
+        // SAS missing value: leading byte is 0x2E or special code 0x41-0x5F
+        if (bytes[colOff] === 0x2E || (bytes[colOff] >= 0x41 && bytes[colOff] <= 0x5F && bytes[colOff+1] === 0)) {
           row[cols[c]] = '';
         } else {
           const n = readF64BE(colOff);
