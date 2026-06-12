@@ -337,87 +337,119 @@ const CHECKS = [
 // ════════════════════════════════════════════
 function parseXpt(arrayBuffer) {
   const bytes = new Uint8Array(arrayBuffer);
+
   function readStr(offset, len) {
     let s = '';
     for (let i = 0; i < len; i++) {
+      if (offset + i >= bytes.length) break;
       const c = bytes[offset + i];
       if (c === 0) break;
       s += String.fromCharCode(c);
     }
     return s.trim();
   }
+
   function readF64BE(offset) {
-    // XPT uses IBM 370 floating point, but many modern SAS exports use IEEE 754 big-endian
-    // Try IEEE 754 first; fall back gracefully
     const b = new Uint8Array(8);
     for (let i = 0; i < 8; i++) b[i] = bytes[offset + i];
     const dv = new DataView(b.buffer);
-    return dv.getFloat64(0, false); // big-endian
+    return dv.getFloat64(0, false);
   }
 
-  const text = new TextDecoder('ascii').decode(bytes);
+  // XPT records are 80 bytes each
+  // Scan for NAMESTR header by looking for the keyword anywhere in the file
+  let namstrIdx = -1;
+  for (let i = 0; i < bytes.length - 80; i += 80) {
+    const rec = readStr(i, 80);
+    if (rec.includes('NAMESTR')) { namstrIdx = i; break; }
+  }
+  if (namstrIdx === -1) throw new Error('Not a valid XPT file (no NAMESTR record found)');
 
-  // XPT structure: 80-byte records
-  // Header record 1 starts at 0, member header at 160 (2 records), namestr header at 320+
-  // Find NAMESTR block
-  const namstrIdx = text.indexOf('HEADER RECORD*******NAMESTR');
-  if (namstrIdx === -1) throw new Error('Not a valid XPT file (no NAMESTR header found)');
-
-  // Parse number of variables from namestr header
-  const namstrHeader = text.substring(namstrIdx, namstrIdx + 80);
-  const nvarMatch = namstrHeader.match(/NAMESTR HEADER RECORD!+\s+(\d+)/);
+  // Extract number of variables from the NAMESTR header record
+  const namstrHeader = readStr(namstrIdx, 80);
+  const nvarMatch = namstrHeader.match(/(\d+)\s*$/);
   const nvar = nvarMatch ? parseInt(nvarMatch[1]) : 0;
 
-  // Each NAMESTR entry is 140 bytes
+  // NAMESTR entries start at the next 80-byte record after the header
   const namstrStart = namstrIdx + 80;
   const cols = [];
-  const colTypes = []; // 1=num, 2=char
+  const colTypes = [];
   const colLens = [];
 
+  // Each NAMESTR entry is 140 bytes
   for (let i = 0; i < nvar; i++) {
     const base = namstrStart + i * 140;
     if (base + 140 > bytes.length) break;
-    const ntype = (bytes[base] << 8) | bytes[base + 1]; // 1=num, 2=char
+    const ntype = (bytes[base] << 8) | bytes[base + 1];
     const nlng  = (bytes[base + 4] << 8) | bytes[base + 5];
     const nname = readStr(base + 8, 8);
-    const nlabel = readStr(base + 16, 40);
-    cols.push(nname || nlabel || `VAR${i+1}`);
+    cols.push(nname || `VAR${i + 1}`);
     colTypes.push(ntype);
-    colLens.push(nlng || 8);
+    colLens.push(nlng > 0 ? nlng : 8);
+  }
+
+  // If nvar was 0 or parsing failed, try scanning 140-byte blocks directly
+  if (cols.length === 0) {
+    let pos = namstrStart;
+    while (pos + 140 <= bytes.length) {
+      const ntype = (bytes[pos] << 8) | bytes[pos + 1];
+      if (ntype !== 1 && ntype !== 2) break;
+      const nlng  = (bytes[pos + 4] << 8) | bytes[pos + 5];
+      const nname = readStr(pos + 8, 8);
+      if (!nname) break;
+      cols.push(nname);
+      colTypes.push(ntype);
+      colLens.push(nlng > 0 ? nlng : 8);
+      pos += 140;
+    }
   }
 
   if (cols.length === 0) throw new Error('No columns found in XPT file');
 
-  // Find OBS (data) block
-  const obsIdx = text.indexOf('HEADER RECORD*******OBS');
+  // Find OBS header record
+  let obsIdx = -1;
+  for (let i = namstrStart; i < bytes.length - 80; i += 80) {
+    const rec = readStr(i, 80);
+    if (rec.includes('OBS')) { obsIdx = i; break; }
+  }
   if (obsIdx === -1) throw new Error('No OBS header found in XPT file');
   const dataStart = obsIdx + 80;
 
   const rowLen = colLens.reduce((s, l) => s + l, 0);
+  if (rowLen === 0) throw new Error('Row length is zero — cannot parse data');
+
   const SAS_EPOCH = Date.UTC(1960, 0, 1);
   const datePattern = /dt$|dtc$|date/i;
 
   const rows = [];
   let offset = dataStart;
+
   while (offset + rowLen <= bytes.length) {
+    // Check for padding at end of file (XPT pads to 80-byte boundary with spaces/nulls)
+    let allPad = true;
+    for (let i = 0; i < rowLen; i++) {
+      const b = bytes[offset + i];
+      if (b !== 0x20 && b !== 0x00) { allPad = false; break; }
+    }
+    if (allPad) break;
+
     const row = {};
     let colOff = offset;
     for (let c = 0; c < cols.length; c++) {
       const len = colLens[c];
       if (colTypes[c] === 2) {
-        // Character
         row[cols[c]] = readStr(colOff, len);
       } else {
-        // Numeric — 8-byte IBM/IEEE float
-        if (bytes[colOff] === 0x2E || bytes[colOff] === 0x00) {
-          row[cols[c]] = ''; // SAS missing value
+        // Check for SAS missing value marker
+        if (bytes[colOff] === 0x2E || (bytes[colOff] >= 0x41 && bytes[colOff] <= 0x5F)) {
+          row[cols[c]] = '';
         } else {
           const n = readF64BE(colOff);
-          if (isNaN(n)) {
+          if (!isFinite(n) || isNaN(n)) {
             row[cols[c]] = '';
           } else if (datePattern.test(cols[c])) {
             const d = new Date(SAS_EPOCH + n * 86400000);
-            row[cols[c]] = isNaN(d.getTime()) ? '' : d.toISOString().slice(0, 10);
+            row[cols[c]] = isNaN(d.getTime()) ? String(n) : d.toISOString().slice(0, 10);
           } else {
             row[cols[c]] = n;
           }
@@ -425,8 +457,6 @@ function parseXpt(arrayBuffer) {
       }
       colOff += len;
     }
-    // Skip if all values empty (padding at end of file)
-    if (Object.values(row).every(v => v === '' || v === 0)) break;
     rows.push(row);
     offset += rowLen;
   }
